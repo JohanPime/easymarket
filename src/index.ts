@@ -10,6 +10,9 @@ const MAX_FIELD_LENGTH = 120;
 const MAX_REQUESTS_PER_MINUTE = 30;
 
 const json = (data: unknown, init?: ResponseInit, requestId?: string): Response =>
+import type { ChatRequest, Env } from './types';
+
+const json = (data: unknown, init?: ResponseInit): Response =>
   new Response(JSON.stringify(data), {
     ...init,
     headers: {
@@ -320,6 +323,25 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    return json({ ok: false, error: 'invalid json body' }, { status: 400 });
+  }
+
+  if (!body.message || body.message.trim().length === 0) {
+    return json({ ok: false, error: 'message is required' }, { status: 400 });
+  }
+
+  // keep a minimal heartbeat in kv.
+  await env.EASYMARKET_KV.put(`tenant:${tenant}:last_chat_at`, new Date().toISOString());
+
+  return json({
+    ok: true,
+    tenant,
+    reply: `echo: ${body.message.trim()}`
+  });
+};
+
+export default {
+  async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === '/health') {

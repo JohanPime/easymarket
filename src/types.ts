@@ -23,3 +23,8 @@ export interface ChatRequest {
   userId?: string;
   messageId?: string;
 }
+
+export interface ChatRequest {
+  message: string;
+  conversationId?: string;
+}
