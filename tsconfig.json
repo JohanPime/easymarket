@@ -12,6 +12,8 @@
       "ES2022",
       "WebWorker"
     ],
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true
     "skipLibCheck": true
   },
   "include": [
