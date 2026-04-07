@@ -24,6 +24,11 @@ const tenantFromPath = (pathname: string): string | null => {
   return match?.[1] ?? null;
 };
 
+const debugTenantFromPath = (pathname: string): string | null => {
+  const match = pathname.match(/^\/debug\/kv\/([^/]+)$/);
+  return match?.[1] ?? null;
+};
+
 const makeRequestId = (): string => crypto.randomUUID();
 
 const safeString = (value: string): string => value.trim().slice(0, MAX_CONTENT_LENGTH);
@@ -32,10 +37,126 @@ const safeField = (value: string, fallback: string): string => {
   return clean || fallback;
 };
 
-const getTenantSystemPrompt = async (env: Env, tenant: string): Promise<string> => {
-  const prompt = await env.EASYMARKET_KV.get(`tenant:${tenant}:system_prompt`);
-  if (!prompt || !prompt.trim()) return DEFAULT_SYSTEM_PROMPT;
-  return prompt.trim();
+const kvKeyTenantPrompt = (tenant: string): string => `tenant:${tenant}:system_prompt`;
+const kvKeyTenantApi = (tenant: string): string => `tenant:${tenant}:api_key`;
+const kvKeyLastChatAt = (tenant: string): string => `tenant:${tenant}:last_chat_at`;
+const kvKeyRateLimit = (tenant: string, channel: string, userId: string, minuteBucket: number): string =>
+  `rl:${tenant}:${channel}:${userId}:${minuteBucket}`;
+
+export const getTenantPrompt = async (
+  env: Env,
+  tenant: string
+): Promise<{ key: string; value: string; exists: boolean; error?: string }> => {
+  const key = kvKeyTenantPrompt(tenant);
+  try {
+    const value = await env.EASYMARKET_KV.get(key);
+    console.log('[kv:getTenantPrompt]', { tenant, key, exists: Boolean(value) });
+    if (!value || !value.trim()) {
+      return { key, value: DEFAULT_SYSTEM_PROMPT, exists: false };
+    }
+    return { key, value: value.trim(), exists: true };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'unknown error';
+    console.log('[kv:getTenantPrompt:error]', { tenant, key, error: errorMsg });
+    return { key, value: DEFAULT_SYSTEM_PROMPT, exists: false, error: errorMsg };
+  }
+};
+
+export const getTenantApiKey = async (
+  env: Env,
+  tenant: string
+): Promise<{ key: string; value: string | null; exists: boolean; error?: string }> => {
+  const key = kvKeyTenantApi(tenant);
+  try {
+    const value = await env.EASYMARKET_KV.get(key);
+    console.log('[kv:getTenantApiKey]', { tenant, key, exists: Boolean(value) });
+    return { key, value: value?.trim() || null, exists: Boolean(value?.trim()) };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'unknown error';
+    console.log('[kv:getTenantApiKey:error]', { tenant, key, error: errorMsg });
+    return { key, value: null, exists: false, error: errorMsg };
+  }
+};
+
+export const putLastChatAt = async (
+  env: Env,
+  tenant: string,
+  timestamp: string
+): Promise<{ ok: boolean; key: string; readBack: string | null; error?: string }> => {
+  const key = kvKeyLastChatAt(tenant);
+  try {
+    console.log('[kv:putLastChatAt:write]', { tenant, key, valueType: typeof timestamp });
+    await env.EASYMARKET_KV.put(key, timestamp);
+    const readBack = await env.EASYMARKET_KV.get(key);
+    console.log('[kv:putLastChatAt:read]', { tenant, key, readBackExists: Boolean(readBack) });
+    return { ok: readBack === timestamp, key, readBack };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'unknown error';
+    console.log('[kv:putLastChatAt:error]', { tenant, key, error: errorMsg });
+    return { ok: false, key, readBack: null, error: errorMsg };
+  }
+};
+
+export const incrementRateLimit = async (
+  env: Env,
+  input: { tenant: string; channel: string; userId: string; maxPerMinute?: number }
+): Promise<{
+  ok: boolean;
+  limited: boolean;
+  key: string;
+  current: number;
+  next: number;
+  minuteBucket: number;
+  error?: string;
+}> => {
+  const minuteBucket = Math.floor(Date.now() / 60000);
+  const key = kvKeyRateLimit(input.tenant, input.channel, input.userId, minuteBucket);
+  const maxPerMinute = input.maxPerMinute ?? MAX_REQUESTS_PER_MINUTE;
+
+  try {
+    const current = Number((await env.EASYMARKET_KV.get(key)) || '0');
+    const limited = current >= maxPerMinute;
+    if (!limited) {
+      await env.EASYMARKET_KV.put(key, String(current + 1), { expirationTtl: 120 });
+    }
+
+    console.log('[kv:incrementRateLimit]', {
+      tenant: input.tenant,
+      channel: input.channel,
+      userId: input.userId,
+      key,
+      current,
+      next: limited ? current : current + 1,
+      limited
+    });
+
+    return {
+      ok: true,
+      limited,
+      key,
+      current,
+      next: limited ? current : current + 1,
+      minuteBucket
+    };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'unknown error';
+    console.log('[kv:incrementRateLimit:error]', {
+      tenant: input.tenant,
+      channel: input.channel,
+      userId: input.userId,
+      key,
+      error: errorMsg
+    });
+    return {
+      ok: false,
+      limited: false,
+      key,
+      current: 0,
+      next: 0,
+      minuteBucket,
+      error: errorMsg
+    };
+  }
 };
 
 const isUniqueConstraintError = (error: unknown): boolean => {
@@ -155,9 +276,9 @@ const assertTenantApiKey = async (
   requestId: string
 ): Promise<Response | null> => {
   const sentKey = request.headers.get('x-api-key')?.trim();
-  const tenantKey = await env.EASYMARKET_KV.get(`tenant:${tenant}:api_key`);
+  const tenantApi = await getTenantApiKey(env, tenant);
   const fallbackKey = env.EASYMARKET_API_KEY?.trim() || null;
-  const expectedKey = tenantKey?.trim() || fallbackKey;
+  const expectedKey = tenantApi.value || fallbackKey;
 
   if (!expectedKey) {
     return null;
@@ -167,30 +288,6 @@ const assertTenantApiKey = async (
     return json({ ok: false, error: 'unauthorized' }, { status: 401 }, requestId);
   }
 
-  return null;
-};
-
-const assertRateLimit = async (
-  env: Env,
-  input: { tenant: string; channel: string; userId: string },
-  requestId: string
-): Promise<Response | null> => {
-  const minuteBucket = Math.floor(Date.now() / 60000);
-  const key = `rl:${input.tenant}:${input.channel}:${input.userId}:${minuteBucket}`;
-  const current = Number((await env.EASYMARKET_KV.get(key)) || '0');
-
-  if (current >= MAX_REQUESTS_PER_MINUTE) {
-    return json(
-      {
-        ok: false,
-        error: 'rate limit exceeded'
-      },
-      { status: 429 },
-      requestId
-    );
-  }
-
-  await env.EASYMARKET_KV.put(key, String(current + 1), { expirationTtl: 120 });
   return null;
 };
 
@@ -218,6 +315,62 @@ const normalizeMessages = (body: ChatRequest): ChatMessage[] => {
 const handleHealth = (): Response =>
   json({ ok: true, service: 'easymarket', timestamp: new Date().toISOString() });
 
+const handleDebugKvGet = async (env: Env, tenant: string, requestId: string): Promise<Response> => {
+  const prompt = await getTenantPrompt(env, tenant);
+  const tenantApi = await getTenantApiKey(env, tenant);
+  const lastChatKey = kvKeyLastChatAt(tenant);
+
+  let lastChatAt: string | null = null;
+  let lastChatReadError: string | null = null;
+  try {
+    lastChatAt = await env.EASYMARKET_KV.get(lastChatKey);
+    console.log('[kv:debug:getLastChatAt]', { tenant, key: lastChatKey, exists: Boolean(lastChatAt) });
+  } catch (error) {
+    lastChatReadError = error instanceof Error ? error.message : 'unknown error';
+    console.log('[kv:debug:getLastChatAt:error]', { tenant, key: lastChatKey, error: lastChatReadError });
+  }
+
+  return json(
+    {
+      ok: true,
+      tenant,
+      tenantSystemPrompt: prompt.exists ? prompt.value : null,
+      tenantApiKeyExists: tenantApi.exists,
+      lastChatAt,
+      keysIntentadas: {
+        tenantPromptKey: prompt.key,
+        tenantApiKey: tenantApi.key,
+        lastChatAtKey: lastChatKey
+      },
+      readErrors: {
+        tenantPromptError: prompt.error || null,
+        tenantApiError: tenantApi.error || null,
+        lastChatAtError: lastChatReadError
+      }
+    },
+    undefined,
+    requestId
+  );
+};
+
+const handleDebugKvPost = async (env: Env, tenant: string, requestId: string): Promise<Response> => {
+  const now = new Date().toISOString();
+  const write = await putLastChatAt(env, tenant, now);
+
+  return json(
+    {
+      ok: true,
+      tenant,
+      wrote: write.ok,
+      key: write.key,
+      valueReadBack: write.readBack,
+      error: write.error || null
+    },
+    undefined,
+    requestId
+  );
+};
+
 const handleChat = async (request: Request, env: Env, tenant: string): Promise<Response> => {
   const requestId = makeRequestId();
   let body: ChatRequest;
@@ -243,8 +396,31 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
   const userId = safeField(body.userId || '', 'anonymous-web-user');
   const messageId = safeField(body.messageId || '', crypto.randomUUID());
 
-  const rateLimitError = await assertRateLimit(env, { tenant, channel, userId }, requestId);
-  if (rateLimitError) return rateLimitError;
+  const rateLimit = await incrementRateLimit(env, { tenant, channel, userId });
+  if (!rateLimit.ok) {
+    return json(
+      {
+        ok: false,
+        error: 'rate limit check failed',
+        rateLimitKey: rateLimit.key,
+        details: rateLimit.error || 'unknown'
+      },
+      { status: 500 },
+      requestId
+    );
+  }
+
+  if (rateLimit.limited) {
+    return json(
+      {
+        ok: false,
+        error: 'rate limit exceeded',
+        rateLimitKey: rateLimit.key
+      },
+      { status: 429 },
+      requestId
+    );
+  }
 
   try {
     const existingReply = await getAssistantReplyForMessageId(env, { tenant, messageId });
@@ -254,18 +430,21 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
           ok: true,
           tenant,
           conversationId,
+          messageId,
           reply: existingReply,
-          deduped: true
+          deduped: true,
+          kvLastChatAtWritten: false,
+          lastChatAtKey: kvKeyLastChatAt(tenant),
+          rateLimitKey: rateLimit.key
         },
         undefined,
         requestId
       );
     }
 
-    const systemPrompt = await getTenantSystemPrompt(env, tenant);
-
+    const prompt = await getTenantPrompt(env, tenant);
     if (!messages.some((message) => message.role === 'system')) {
-      messages.unshift({ role: 'system', content: systemPrompt });
+      messages.unshift({ role: 'system', content: prompt.value });
     }
 
     await ensureTenantExists(env, tenant);
@@ -281,9 +460,7 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
       userId,
       createdBy: 'user'
     });
-    
-    // if a retry races with an existing assistant row, reuse it.
-    // if not ready yet, client can retry with the same messageId.
+
     const reply = await generateReply(messages, env);
 
     try {
@@ -304,9 +481,22 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
       }
     }
 
-    await env.EASYMARKET_KV.put(`tenant:${tenant}:last_chat_at`, new Date().toISOString());
+    const kvWrite = await putLastChatAt(env, tenant, new Date().toISOString());
 
-    return json({ ok: true, tenant, conversationId, messageId, reply }, undefined, requestId);
+    return json(
+      {
+        ok: true,
+        tenant,
+        conversationId,
+        messageId,
+        reply,
+        kvLastChatAtWritten: kvWrite.ok,
+        lastChatAtKey: kvWrite.key,
+        rateLimitKey: rateLimit.key
+      },
+      undefined,
+      requestId
+    );
   } catch (error) {
     const err = error as Error;
 
@@ -318,8 +508,12 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
             ok: true,
             tenant,
             conversationId,
+            messageId,
             reply: existingReply,
-            deduped: true
+            deduped: true,
+            kvLastChatAtWritten: false,
+            lastChatAtKey: kvKeyLastChatAt(tenant),
+            rateLimitKey: rateLimit.key
           },
           undefined,
           requestId
@@ -329,7 +523,8 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
       return json(
         {
           ok: false,
-          error: 'duplicate message in progress, retry with same messageId'
+          error: 'duplicate message in progress, retry with same messageId',
+          rateLimitKey: rateLimit.key
         },
         { status: 409 },
         requestId
@@ -343,7 +538,8 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
           error:
             err.message === 'ALL_KEYS_COOLDOWN'
               ? 'las claves de gemini están en cooldown, intenta en unos segundos'
-              : 'no hay claves de gemini configuradas en este momento'
+              : 'no hay claves de gemini configuradas en este momento',
+          rateLimitKey: rateLimit.key
         },
         { status: 503 },
         requestId
@@ -354,7 +550,8 @@ const handleChat = async (request: Request, env: Env, tenant: string): Promise<R
       {
         ok: false,
         error: 'error interno',
-        requestId
+        requestId,
+        rateLimitKey: rateLimit.key
       },
       { status: 500 },
       requestId
@@ -368,6 +565,15 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return handleHealth();
+    }
+
+    const debugTenant = debugTenantFromPath(url.pathname);
+    if (request.method === 'GET' && debugTenant) {
+      return handleDebugKvGet(env, debugTenant, makeRequestId());
+    }
+
+    if (request.method === 'POST' && debugTenant) {
+      return handleDebugKvPost(env, debugTenant, makeRequestId());
     }
 
     const tenant = tenantFromPath(url.pathname);
