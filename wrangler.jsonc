@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "easymarket",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-04",
+  "assets": {
+    "directory": "public"
+  },
+  "d1_databases": [
+    {
+      "binding": "EASYMARKET_DB",
+      "database_name": "easymarket-db",
+      "database_id": "3e284958-4b78-4607-b71e-f87d592850a3",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "EASYMARKET_KV",
+      "id": "84fc31ce443c42eda13260e4cc3c84c3"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "EASYMARKET_DOCS",
+      "bucket_name": "easymarket-docs"
+    }
+  ]
+}
