@@ -198,9 +198,6 @@ await run('GET /debug/kv/:tenant marca api key de placeholder', async () => {
   assert.equal(body.tenantApiKeyLooksPlaceholder, true);
 });
 
-  assert.equal(JSON.stringify(body).includes('my-secret'), false);
-});
-
 await run('POST /debug/kv/:tenant escribe y relee', async () => {
   const { env } = makeEnv();
   const res = await worker.fetch(new Request('https://x/debug/kv/demo', { method: 'POST' }), env, {});
