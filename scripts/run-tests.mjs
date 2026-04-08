@@ -180,6 +180,24 @@ await run('GET /debug/kv/:tenant lee datos sin exponer api key', async () => {
   assert.equal(typeof body.tenantSystemPrompt, 'string');
   assert.equal(body.tenantSystemPrompt, 'prompt demo');
   assert.equal(body.lastChatAt, '2026-04-07T00:00:00.000Z');
+  assert.equal(body.tenantApiKeyLooksPlaceholder, false);
+  assert.equal(Array.isArray(body.setupHints), true);
+  assert.equal(body.setupHints.length, 2);
+  assert.equal(JSON.stringify(body).includes('my-secret'), false);
+});
+
+await run('GET /debug/kv/:tenant marca api key de placeholder', async () => {
+  const { env, kv } = makeEnv();
+  kv.set('tenant:demo:api_key', 'TU_API_KEY_REAL');
+
+  const res = await worker.fetch(new Request('https://x/debug/kv/demo'), env, {});
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.tenantApiKeyExists, true);
+  assert.equal(body.tenantApiKeyLooksPlaceholder, true);
+});
+
   assert.equal(JSON.stringify(body).includes('my-secret'), false);
 });
 

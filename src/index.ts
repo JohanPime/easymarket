@@ -42,6 +42,8 @@ const kvKeyTenantApi = (tenant: string): string => `tenant:${tenant}:api_key`;
 const kvKeyLastChatAt = (tenant: string): string => `tenant:${tenant}:last_chat_at`;
 const kvKeyRateLimit = (tenant: string, channel: string, userId: string, minuteBucket: number): string =>
   `rl:${tenant}:${channel}:${userId}:${minuteBucket}`;
+const isPlaceholderSecret = (value: string | null | undefined): boolean =>
+  Boolean(value && /^(tu_|your_|test_|demo_|example_)/i.test(value.trim()));
 
 export const getTenantPrompt = async (
   env: Env,
@@ -319,6 +321,11 @@ const handleDebugKvGet = async (env: Env, tenant: string, requestId: string): Pr
   const prompt = await getTenantPrompt(env, tenant);
   const tenantApi = await getTenantApiKey(env, tenant);
   const lastChatKey = kvKeyLastChatAt(tenant);
+  const apiKeyLooksPlaceholder = isPlaceholderSecret(tenantApi.value);
+  const setupHints = [
+    `wrangler kv key put --remote --namespace-id <KV_NAMESPACE_ID> "${prompt.key}" "<SYSTEM_PROMPT>"`,
+    `wrangler kv key put --remote --namespace-id <KV_NAMESPACE_ID> "${tenantApi.key}" "<TENANT_API_KEY>"`
+  ];
 
   let lastChatAt: string | null = null;
   let lastChatReadError: string | null = null;
@@ -336,12 +343,14 @@ const handleDebugKvGet = async (env: Env, tenant: string, requestId: string): Pr
       tenant,
       tenantSystemPrompt: prompt.exists ? prompt.value : null,
       tenantApiKeyExists: tenantApi.exists,
+      tenantApiKeyLooksPlaceholder: apiKeyLooksPlaceholder,
       lastChatAt,
       keysIntentadas: {
         tenantPromptKey: prompt.key,
         tenantApiKey: tenantApi.key,
         lastChatAtKey: lastChatKey
       },
+      setupHints,
       readErrors: {
         tenantPromptError: prompt.error || null,
         tenantApiError: tenantApi.error || null,
