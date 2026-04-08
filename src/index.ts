@@ -280,7 +280,8 @@ const assertTenantApiKey = async (
   const sentKey = request.headers.get('x-api-key')?.trim();
   const tenantApi = await getTenantApiKey(env, tenant);
   const fallbackKey = env.EASYMARKET_API_KEY?.trim() || null;
-  const expectedKey = tenantApi.value || fallbackKey;
+  const expectedKeyRaw = tenantApi.value || fallbackKey;
+  const expectedKey = isPlaceholderSecret(expectedKeyRaw) ? null : expectedKeyRaw;
 
   if (!expectedKey) {
     return null;
