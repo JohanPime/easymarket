@@ -1,1 +1,23 @@
-hii
+# easymarket worker notes
+
+## GitHub conflict resolution (PR #5)
+
+If GitHub shows conflicts in `package.json`, `scripts/run-tests.mjs`, and `src/index.ts`, keep a merged result (not just one side):
+
+- `package.json`: keep `wrangler`, `vitest`, and `typescript` dev deps.
+- `scripts/run-tests.mjs`: keep the debug assertions for:
+  - `tenantApiKeyLooksPlaceholder`
+  - `setupHints`
+  - no API key secret leakage in JSON.
+- `src/index.ts`: keep:
+  - `isPlaceholderSecret(...)`
+  - `tenantApiKeyLooksPlaceholder` in `/debug/kv/:tenant` response
+  - `setupHints` with `wrangler kv key put --remote ...`.
+
+Recommended in GitHub UI:
+1. Click **Accept both changes** in each conflict block.
+2. Remove conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+3. Keep only one copy of duplicated lines.
+4. Validate by running:
+   - `npm test`
+   - `npm run typecheck`

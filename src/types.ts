@@ -1,7 +1,7 @@
 export interface Env {
   EASYMARKET_DB: D1Database;
   EASYMARKET_KV: KVNamespace;
-  EASYMARKET_DOCS: R2Bucket;
+  EASYMARKET_DOCS?: R2Bucket;
   GEMINI_API_1?: string;
   GEMINI_API_2?: string;
   GEMINI_API_3?: string;

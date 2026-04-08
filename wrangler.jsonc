@@ -19,11 +19,5 @@
       "binding": "EASYMARKET_KV",
       "id": "84fc31ce443c42eda13260e4cc3c84c3"
     }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "EASYMARKET_DOCS",
-      "bucket_name": "easymarket-docs"
-    }
   ]
 }
