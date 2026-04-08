@@ -198,6 +198,28 @@ await run('GET /debug/kv/:tenant marca api key de placeholder', async () => {
   assert.equal(body.tenantApiKeyLooksPlaceholder, true);
 });
 
+await run('chat ignora api key placeholder y no exige x-api-key', async () => {
+  const { env, kv } = makeEnv();
+  kv.set('tenant:demo:api_key', 'TU_API_KEY_REAL');
+
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) });
+
+  const res = await worker.fetch(
+    new Request('https://x/t/demo/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hola', conversationId: 'c-2', messageId: 'm-2', channel: 'web', userId: 'u-2' })
+    }),
+    env,
+    {}
+  );
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(typeof body.reply, 'string');
+});
+
 await run('POST /debug/kv/:tenant escribe y relee', async () => {
   const { env } = makeEnv();
   const res = await worker.fetch(new Request('https://x/debug/kv/demo', { method: 'POST' }), env, {});
