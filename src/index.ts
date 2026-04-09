@@ -1,6 +1,6 @@
 import { generateReply } from './lib/gemini.ts';
 import { parseWhatsAppInboundMessages, sendWhatsAppText } from './lib/whatsapp.ts';
-import type { ChatMessage, ChatRequest, Env } from './types';
+import type { ChatMessage, ChatRequest, Env, MetaPublicConfig } from './types';
 
 const DEFAULT_SYSTEM_PROMPT =
   'eres el asistente de easymarket. responde en español de forma breve y útil para atención comercial y soporte general. no inventes datos; si falta contexto, pide aclaración.';
@@ -323,6 +323,230 @@ const normalizeMessages = (body: ChatRequest): ChatMessage[] => {
 
 const handleHealth = (): Response =>
   json({ ok: true, service: 'easymarket', timestamp: new Date().toISOString() });
+
+const asTrimmedOrNull = (value: string | undefined): string | null => {
+  const clean = value?.trim();
+  return clean ? clean : null;
+};
+
+const readMetaPublicConfig = (env: Env, request: Request): MetaPublicConfig => {
+  const url = new URL(request.url);
+  return {
+    appId: asTrimmedOrNull(env.META_APP_ID),
+    embeddedSignupConfigId: asTrimmedOrNull(env.META_EMBEDDED_SIGNUP_CONFIG_ID),
+    redirectUri: `${url.origin}/wa-onboarding`
+  };
+};
+
+const safeInlineJson = (value: unknown): string =>
+  JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+
+const renderWaOnboardingPage = (config: MetaPublicConfig): string => {
+  const runtimeConfig = safeInlineJson(config);
+  const hasMissingConfig = !config.appId || !config.embeddedSignupConfigId;
+
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EasyMarket WhatsApp Onboarding</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #0b1220; --panel: #111a2b; --text: #e7edf7; --muted: #a7b4c8; --error: #ff7a7a; --ok: #71d08f; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100dvh; background: radial-gradient(circle at top, #16243d 0%, var(--bg) 45%); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      main { max-width: 900px; margin: 0 auto; padding: 1.2rem; display: grid; gap: 0.9rem; }
+      .panel { background: rgba(17, 26, 43, 0.82); border: 1px solid #22314d; border-radius: 12px; padding: 1rem; }
+      h1 { margin: 0 0 0.35rem; }
+      .muted { color: var(--muted); margin: 0; }
+      button { width: 100%; border-radius: 10px; border: 0; padding: 0.8rem; font: inherit; font-weight: 600; cursor: pointer; background: #2469b8; color: var(--text); }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      .status-ok { color: var(--ok); }
+      .status-error { color: var(--error); }
+      pre { margin: 0; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 320px; }
+      .grid { display: grid; gap: 0.8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>EasyMarket WhatsApp Onboarding</h1>
+        <p class="muted">conecta el whatsapp del negocio con meta embedded signup.</p>
+      </section>
+      <section class="panel">
+        <button id="connectBtn" type="button">Conectar WhatsApp del negocio</button>
+      </section>
+      <section class="panel grid">
+        <div><strong>estado</strong><pre id="status"></pre></div>
+        <div><strong>resultado</strong><pre id="result"></pre></div>
+        <div><strong>error</strong><pre id="error"></pre></div>
+      </section>
+      <section class="panel">
+        <strong>payload crudo (debug temporal)</strong>
+        <pre id="rawPayload"></pre>
+      </section>
+    </main>
+    <script>
+      (() => {
+        const config = ${runtimeConfig};
+        const statusEl = document.getElementById('status');
+        const resultEl = document.getElementById('result');
+        const errorEl = document.getElementById('error');
+        const rawPayloadEl = document.getElementById('rawPayload');
+        const connectBtn = document.getElementById('connectBtn');
+        const sdkUrl = 'https://connect.facebook.net/en_US/sdk.js';
+        const graphVersion = 'v22.0';
+        const expectedOrigins = new Set(['https://www.facebook.com', 'https://web.facebook.com', 'https://business.facebook.com']);
+        let sdkReady = false;
+
+        const setText = (el, text) => { if (el) el.textContent = text; };
+        const setStatus = (text, mode = 'normal') => {
+          setText(statusEl, text);
+          if (!statusEl) return;
+          statusEl.className = mode === 'ok' ? 'status-ok' : mode === 'error' ? 'status-error' : '';
+        };
+        const setError = (text) => setText(errorEl, text || '');
+        const setResult = (value) => setText(resultEl, JSON.stringify(value, null, 2));
+        const setRaw = (value) => setText(rawPayloadEl, JSON.stringify(value, null, 2));
+
+        const parseMaybeJson = (value) => {
+          if (typeof value !== 'string') return value;
+          try { return JSON.parse(value); } catch { return value; }
+        };
+
+        const extractResult = (payload) => {
+          const root = payload && typeof payload === 'object' ? payload : {};
+          const data = root.data && typeof root.data === 'object' ? root.data : {};
+          const session = data.session_info && typeof data.session_info === 'object' ? data.session_info : {};
+          const extras = data.extras && typeof data.extras === 'object' ? data.extras : {};
+
+          return {
+            code: typeof root.code === 'string' ? root.code : typeof data.code === 'string' ? data.code : null,
+            wabaId: typeof session.waba_id === 'string' ? session.waba_id : typeof extras.waba_id === 'string' ? extras.waba_id : null,
+            phoneNumberId:
+              typeof session.phone_number_id === 'string'
+                ? session.phone_number_id
+                : typeof extras.phone_number_id === 'string'
+                  ? extras.phone_number_id
+                  : null
+          };
+        };
+
+        const onMessage = (event) => {
+          if (!expectedOrigins.has(event.origin)) return;
+          const parsed = parseMaybeJson(event.data);
+          console.log('[wa-onboarding] postMessage', { origin: event.origin, payload: parsed });
+          setRaw({ source: 'postMessage', origin: event.origin, payload: parsed });
+          const extracted = extractResult(parsed);
+          setResult(extracted);
+        };
+
+        const loadSdk = () =>
+          new Promise((resolve, reject) => {
+            if (window.FB && typeof window.FB.init === 'function') {
+              resolve();
+              return;
+            }
+            const existing = document.getElementById('facebook-jssdk');
+            if (existing) {
+              setTimeout(() => (window.FB ? resolve() : reject(new Error('sdk no disponible'))), 1000);
+              return;
+            }
+            const script = document.createElement('script');
+            script.id = 'facebook-jssdk';
+            script.async = true;
+            script.defer = true;
+            script.src = sdkUrl;
+            script.onload = () => (window.FB ? resolve() : reject(new Error('sdk no inicializado')));
+            script.onerror = () => reject(new Error('no se pudo cargar sdk'));
+            document.head.appendChild(script);
+            setTimeout(() => reject(new Error('timeout cargando sdk')), 10000);
+          });
+
+        const initSdk = async () => {
+          if (!config.appId || !config.embeddedSignupConfigId) {
+            connectBtn.disabled = true;
+            setStatus('config faltante en worker', 'error');
+            setError('faltan META_APP_ID o META_EMBEDDED_SIGNUP_CONFIG_ID en Cloudflare.');
+            setResult({ sdkLoaded: false, configReady: false, appId: config.appId, embeddedSignupConfigId: config.embeddedSignupConfigId });
+            return;
+          }
+
+          try {
+            setStatus('cargando sdk...');
+            await loadSdk();
+            window.FB.init({ appId: config.appId, autoLogAppEvents: true, xfbml: false, version: graphVersion });
+            sdkReady = true;
+            setStatus('sdk cargado y config lista', 'ok');
+            setResult({ sdkLoaded: true, configReady: true, appId: config.appId, embeddedSignupConfigId: config.embeddedSignupConfigId, redirectUri: config.redirectUri });
+            console.log('[wa-onboarding] sdk initialized', { appId: config.appId, embeddedSignupConfigId: config.embeddedSignupConfigId, redirectUri: config.redirectUri });
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : 'error sdk';
+            setStatus('error cargando sdk', 'error');
+            setError(msg);
+            connectBtn.disabled = true;
+            console.error('[wa-onboarding] sdk error', error);
+          }
+        };
+
+        const launchSignup = () => {
+          if (!sdkReady || !window.FB) {
+            setStatus('sdk no disponible', 'error');
+            return;
+          }
+          setStatus('login iniciado');
+          setError('');
+          setRaw({ source: 'login', event: 'started' });
+          console.log('[wa-onboarding] login start', { configId: config.embeddedSignupConfigId });
+
+          window.FB.login(
+            (response) => {
+              console.log('[wa-onboarding] login callback', response);
+              setRaw({ source: 'login_callback', payload: response });
+              if (!response || !response.authResponse) {
+                setStatus('flujo cancelado o sin authResponse', 'error');
+                setError('el usuario canceló o no se recibió authResponse.');
+                setResult({ code: null, wabaId: null, phoneNumberId: null, status: 'cancelled' });
+                return;
+              }
+              const extracted = extractResult(response);
+              setStatus('flujo completado', 'ok');
+              setResult({ ...extracted, status: 'completed' });
+            },
+            {
+              config_id: config.embeddedSignupConfigId,
+              response_type: 'code',
+              override_default_response_type: true,
+              extras: {
+                setup: {},
+                feature: 'whatsapp_embedded_signup',
+                sessionInfoVersion: '3'
+              }
+            }
+          );
+        };
+
+        window.addEventListener('message', onMessage);
+        connectBtn.addEventListener('click', launchSignup);
+        setRaw({ source: 'runtime_config', payload: config });
+        ${hasMissingConfig ? "setError('faltan variables de entorno para iniciar el onboarding.');" : ''}
+        void initSdk();
+      })();
+    </script>
+  </body>
+</html>`;
+};
+
+const handleWaOnboardingGet = (request: Request, env: Env): Response => {
+  const config = readMetaPublicConfig(env, request);
+  return new Response(renderWaOnboardingPage(config), {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store'
+    }
+  });
+};
 
 const getMetaVerifyToken = (env: Env, tenant: string): string | null => {
   if (tenant === 'demo') {
@@ -679,6 +903,10 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/health') {
       return handleHealth();
+    }
+
+    if (request.method === 'GET' && url.pathname === '/wa-onboarding') {
+      return handleWaOnboardingGet(request, env);
     }
 
     const debugTenant = debugTenantFromPath(url.pathname);

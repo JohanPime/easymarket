@@ -371,4 +371,48 @@ await run('chat responde campos de observabilidad kv', async () => {
   assert.equal(typeof body.rateLimitKey, 'string');
 });
 
+await run('GET /wa-onboarding responde 200 e inyecta config runtime', async () => {
+  const { env } = makeEnv();
+  env.META_APP_ID = '1234567890';
+  env.META_EMBEDDED_SIGNUP_CONFIG_ID = 'cfg_123';
+  env.META_WA_TOKEN__demo = 'super-secret-token';
+  env.META_VERIFY_TOKEN__demo = 'verify-secret-token';
+
+  const res = await worker.fetch(new Request('https://x/wa-onboarding'), env, {});
+  const html = await res.text();
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type')?.includes('text/html'), true);
+  assert.equal(html.includes('EasyMarket WhatsApp Onboarding'), true);
+  assert.equal(html.includes('Conectar WhatsApp del negocio'), true);
+  assert.equal(html.includes('"appId":"1234567890"'), true);
+  assert.equal(html.includes('"embeddedSignupConfigId":"cfg_123"'), true);
+  assert.equal(html.includes('super-secret-token'), false);
+  assert.equal(html.includes('verify-secret-token'), false);
+});
+
+await run('GET /wa-onboarding no rompe cuando falta config de meta', async () => {
+  const { env } = makeEnv();
+  delete env.META_APP_ID;
+  delete env.META_EMBEDDED_SIGNUP_CONFIG_ID;
+
+  const res = await worker.fetch(new Request('https://x/wa-onboarding'), env, {});
+  const html = await res.text();
+
+  assert.equal(res.status, 200);
+  assert.equal(html.includes('"appId":null'), true);
+  assert.equal(html.includes('"embeddedSignupConfigId":null'), true);
+  assert.equal(html.includes('faltan META_APP_ID o META_EMBEDDED_SIGNUP_CONFIG_ID en Cloudflare.'), true);
+});
+
+await run('GET /health sigue funcionando', async () => {
+  const { env } = makeEnv();
+  const res = await worker.fetch(new Request('https://x/health'), env, {});
+  const body = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.service, 'easymarket');
+});
+
 console.log('all tests passed');
