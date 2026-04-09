@@ -5,6 +5,7 @@ import worker, {
   incrementRateLimit,
   putLastChatAt
 } from '../src/index.ts';
+import { parseWhatsAppInboundMessages, sendWhatsAppText } from '../src/lib/whatsapp.ts';
 
 const run = async (name, fn) => {
   try {
@@ -281,6 +282,70 @@ await run('POST /t/:tenant/webhook recibe payload y responde ok', async () => {
   } finally {
     console.log = originalLog;
   }
+});
+
+await run('parseo de webhook de texto', async () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              messages: [{ from: '50760000000', id: 'wamid.1', type: 'text', text: { body: 'hola' } }]
+            }
+          }
+        ]
+      }
+    ]
+  };
+
+  const messages = parseWhatsAppInboundMessages(payload);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].from, '50760000000');
+  assert.equal(messages[0].messageId, 'wamid.1');
+  assert.equal(messages[0].type, 'text');
+  assert.equal(messages[0].text, 'hola');
+});
+
+await run('ignorar payload sin mensaje', async () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ value: { statuses: [{ id: 'x' }] } }] }]
+  };
+
+  const messages = parseWhatsAppInboundMessages(payload);
+  assert.equal(messages.length, 0);
+});
+
+await run('sendWhatsAppText construye request correcto', async () => {
+  const { env } = makeEnv();
+  env.META_WA_TOKEN__demo = 'wa-token';
+  env.META_PHONE_NUMBER_ID__demo = '123456789';
+
+  let requestUrl = '';
+  let requestInit = null;
+  globalThis.fetch = async (url, init) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return { ok: true, status: 200, text: async () => '' };
+  };
+
+  const result = await sendWhatsAppText(env, { tenant: 'demo', to: '50760000000', text: 'respuesta' });
+  assert.equal(result.ok, true);
+  assert.equal(requestUrl, 'https://graph.facebook.com/v20.0/123456789/messages');
+  assert.equal(requestInit?.method, 'POST');
+  assert.equal(requestInit?.headers.authorization, 'Bearer wa-token');
+  assert.equal(requestInit?.headers['content-type'], 'application/json');
+  assert.equal(
+    requestInit?.body,
+    JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: '50760000000',
+      type: 'text',
+      text: { body: 'respuesta' }
+    })
+  );
 });
 
 await run('chat responde campos de observabilidad kv', async () => {

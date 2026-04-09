@@ -1,4 +1,5 @@
 import { generateReply } from './lib/gemini.ts';
+import { parseWhatsAppInboundMessages, sendWhatsAppText } from './lib/whatsapp.ts';
 import type { ChatMessage, ChatRequest, Env } from './types';
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -344,7 +345,21 @@ const handleWebhookGet = (url: URL, env: Env, tenant: string): Response => {
   return new Response(challenge, { status: 200, headers: { 'content-type': 'text/plain' } });
 };
 
-const handleWebhookPost = async (request: Request): Promise<Response> => {
+const webhookInternalApiKey = async (env: Env, tenant: string): Promise<string | null> => {
+  const tenantApi = await getTenantApiKey(env, tenant);
+  if (tenantApi.value && !isPlaceholderSecret(tenantApi.value)) {
+    return tenantApi.value;
+  }
+
+  const fallback = env.EASYMARKET_API_KEY?.trim() || null;
+  if (fallback && !isPlaceholderSecret(fallback)) {
+    return fallback;
+  }
+
+  return null;
+};
+
+const handleWebhookPost = async (request: Request, env: Env, tenant: string): Promise<Response> => {
   // receive meta test webhooks
   let payload: unknown;
 
@@ -355,6 +370,55 @@ const handleWebhookPost = async (request: Request): Promise<Response> => {
   }
 
   console.log('[meta:webhook]', payload);
+  const inboundMessages = parseWhatsAppInboundMessages(payload);
+  const internalApiKey = await webhookInternalApiKey(env, tenant);
+
+  for (const inbound of inboundMessages) {
+    if (inbound.type !== 'text' || !inbound.text) {
+      continue;
+    }
+
+    const chatPayload: ChatRequest = {
+      message: inbound.text,
+      channel: 'whatsapp',
+      userId: inbound.from,
+      messageId: inbound.messageId,
+      conversationId: `wa:${tenant}:${inbound.from}`
+    };
+
+    const headers = new Headers({ 'content-type': 'application/json' });
+    if (internalApiKey) {
+      headers.set('x-api-key', internalApiKey);
+    }
+
+    const internalRequest = new Request(`https://internal/t/${tenant}/api/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(chatPayload)
+    });
+
+    const chatResponse = await handleChat(internalRequest, env, tenant);
+    if (!chatResponse.ok) {
+      console.log('[meta:webhook:chat_error]', { tenant, from: inbound.from, status: chatResponse.status });
+      continue;
+    }
+
+    const chatBody = (await chatResponse.json()) as { reply?: unknown };
+    if (typeof chatBody.reply !== 'string' || !chatBody.reply.trim()) {
+      continue;
+    }
+
+    const sendResult = await sendWhatsAppText(env, { tenant, to: inbound.from, text: chatBody.reply });
+    if (!sendResult.ok) {
+      console.log('[meta:webhook:send_error]', {
+        tenant,
+        from: inbound.from,
+        error: sendResult.error || 'unknown',
+        status: sendResult.status || null
+      });
+    }
+  }
+
   return json({ ok: true });
 };
 
@@ -632,7 +696,7 @@ export default {
     }
 
     if (request.method === 'POST' && webhookTenant) {
-      return handleWebhookPost(request);
+      return handleWebhookPost(request, env, webhookTenant);
     }
 
     const tenant = tenantFromPath(url.pathname);
