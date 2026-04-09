@@ -6,6 +6,9 @@ export interface Env {
   GEMINI_API_2?: string;
   GEMINI_API_3?: string;
   EASYMARKET_API_KEY?: string;
+  META_VERIFY_TOKEN__demo?: string;
+  META_WA_TOKEN__demo?: string;
+  META_PHONE_NUMBER_ID__demo?: string;
 }
 
 export type ChatRole = 'system' | 'user' | 'assistant';

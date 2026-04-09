@@ -5,6 +5,7 @@ import worker, {
   incrementRateLimit,
   putLastChatAt
 } from '../src/index.ts';
+import { parseWhatsAppInboundMessages, sendWhatsAppText } from '../src/lib/whatsapp.ts';
 
 const run = async (name, fn) => {
   try {
@@ -229,6 +230,122 @@ await run('POST /debug/kv/:tenant escribe y relee', async () => {
   assert.equal(body.wrote, true);
   assert.equal(Boolean(body.key), true);
   assert.equal(typeof body.valueReadBack, 'string');
+});
+
+await run('GET /t/:tenant/webhook valida verify token de demo', async () => {
+  const { env } = makeEnv();
+  env.META_VERIFY_TOKEN__demo = 'verify-demo';
+
+  const okRes = await worker.fetch(
+    new Request('https://x/t/demo/webhook?hub.mode=subscribe&hub.verify_token=verify-demo&hub.challenge=abc123'),
+    env,
+    {}
+  );
+  const okBody = await okRes.text();
+
+  assert.equal(okRes.status, 200);
+  assert.equal(okBody, 'abc123');
+  assert.equal(okRes.headers.get('content-type'), 'text/plain');
+
+  const failRes = await worker.fetch(
+    new Request('https://x/t/demo/webhook?hub.mode=subscribe&hub.verify_token=bad&hub.challenge=abc123'),
+    env,
+    {}
+  );
+
+  assert.equal(failRes.status, 403);
+});
+
+await run('POST /t/:tenant/webhook recibe payload y responde ok', async () => {
+  const { env } = makeEnv();
+  const originalLog = console.log;
+  const logs = [];
+  console.log = (...args) => {
+    logs.push(args);
+  };
+
+  try {
+    const res = await worker.fetch(
+      new Request('https://x/t/demo/webhook', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ object: 'whatsapp_business_account' })
+      }),
+      env,
+      {}
+    );
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(logs.some((entry) => entry[0] === '[meta:webhook]'), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+await run('parseo de webhook de texto', async () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        changes: [
+          {
+            value: {
+              messages: [{ from: '50760000000', id: 'wamid.1', type: 'text', text: { body: 'hola' } }]
+            }
+          }
+        ]
+      }
+    ]
+  };
+
+  const messages = parseWhatsAppInboundMessages(payload);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].from, '50760000000');
+  assert.equal(messages[0].messageId, 'wamid.1');
+  assert.equal(messages[0].type, 'text');
+  assert.equal(messages[0].text, 'hola');
+});
+
+await run('ignorar payload sin mensaje', async () => {
+  const payload = {
+    object: 'whatsapp_business_account',
+    entry: [{ changes: [{ value: { statuses: [{ id: 'x' }] } }] }]
+  };
+
+  const messages = parseWhatsAppInboundMessages(payload);
+  assert.equal(messages.length, 0);
+});
+
+await run('sendWhatsAppText construye request correcto', async () => {
+  const { env } = makeEnv();
+  env.META_WA_TOKEN__demo = 'wa-token';
+  env.META_PHONE_NUMBER_ID__demo = '123456789';
+
+  let requestUrl = '';
+  let requestInit = null;
+  globalThis.fetch = async (url, init) => {
+    requestUrl = String(url);
+    requestInit = init;
+    return { ok: true, status: 200, text: async () => '' };
+  };
+
+  const result = await sendWhatsAppText(env, { tenant: 'demo', to: '50760000000', text: 'respuesta' });
+  assert.equal(result.ok, true);
+  assert.equal(requestUrl, 'https://graph.facebook.com/v20.0/123456789/messages');
+  assert.equal(requestInit?.method, 'POST');
+  assert.equal(requestInit?.headers.authorization, 'Bearer wa-token');
+  assert.equal(requestInit?.headers['content-type'], 'application/json');
+  assert.equal(
+    requestInit?.body,
+    JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: '50760000000',
+      type: 'text',
+      text: { body: 'respuesta' }
+    })
+  );
 });
 
 await run('chat responde campos de observabilidad kv', async () => {
