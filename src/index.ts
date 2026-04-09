@@ -24,6 +24,11 @@ const tenantFromPath = (pathname: string): string | null => {
   return match?.[1] ?? null;
 };
 
+const webhookTenantFromPath = (pathname: string): string | null => {
+  const match = pathname.match(/^\/t\/([^/]+)\/webhook$/);
+  return match?.[1] ?? null;
+};
+
 const debugTenantFromPath = (pathname: string): string | null => {
   const match = pathname.match(/^\/debug\/kv\/([^/]+)$/);
   return match?.[1] ?? null;
@@ -318,6 +323,41 @@ const normalizeMessages = (body: ChatRequest): ChatMessage[] => {
 const handleHealth = (): Response =>
   json({ ok: true, service: 'easymarket', timestamp: new Date().toISOString() });
 
+const getMetaVerifyToken = (env: Env, tenant: string): string | null => {
+  if (tenant === 'demo') {
+    return env.META_VERIFY_TOKEN__demo?.trim() || null;
+  }
+
+  return null;
+};
+
+const handleWebhookGet = (url: URL, env: Env, tenant: string): Response => {
+  // meta callback verification
+  const verifyToken = url.searchParams.get('hub.verify_token');
+  const challenge = url.searchParams.get('hub.challenge');
+  const expectedToken = getMetaVerifyToken(env, tenant);
+
+  if (!verifyToken || !challenge || !expectedToken || verifyToken !== expectedToken) {
+    return new Response(null, { status: 403 });
+  }
+
+  return new Response(challenge, { status: 200, headers: { 'content-type': 'text/plain' } });
+};
+
+const handleWebhookPost = async (request: Request): Promise<Response> => {
+  // receive meta test webhooks
+  let payload: unknown;
+
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: 'invalid json body' }, { status: 400 });
+  }
+
+  console.log('[meta:webhook]', payload);
+  return json({ ok: true });
+};
+
 const handleDebugKvGet = async (env: Env, tenant: string, requestId: string): Promise<Response> => {
   const prompt = await getTenantPrompt(env, tenant);
   const tenantApi = await getTenantApiKey(env, tenant);
@@ -584,6 +624,15 @@ export default {
 
     if (request.method === 'POST' && debugTenant) {
       return handleDebugKvPost(env, debugTenant, makeRequestId());
+    }
+
+    const webhookTenant = webhookTenantFromPath(url.pathname);
+    if (request.method === 'GET' && webhookTenant) {
+      return handleWebhookGet(url, env, webhookTenant);
+    }
+
+    if (request.method === 'POST' && webhookTenant) {
+      return handleWebhookPost(request);
     }
 
     const tenant = tenantFromPath(url.pathname);

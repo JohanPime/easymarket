@@ -231,6 +231,58 @@ await run('POST /debug/kv/:tenant escribe y relee', async () => {
   assert.equal(typeof body.valueReadBack, 'string');
 });
 
+await run('GET /t/:tenant/webhook valida verify token de demo', async () => {
+  const { env } = makeEnv();
+  env.META_VERIFY_TOKEN__demo = 'verify-demo';
+
+  const okRes = await worker.fetch(
+    new Request('https://x/t/demo/webhook?hub.mode=subscribe&hub.verify_token=verify-demo&hub.challenge=abc123'),
+    env,
+    {}
+  );
+  const okBody = await okRes.text();
+
+  assert.equal(okRes.status, 200);
+  assert.equal(okBody, 'abc123');
+  assert.equal(okRes.headers.get('content-type'), 'text/plain');
+
+  const failRes = await worker.fetch(
+    new Request('https://x/t/demo/webhook?hub.mode=subscribe&hub.verify_token=bad&hub.challenge=abc123'),
+    env,
+    {}
+  );
+
+  assert.equal(failRes.status, 403);
+});
+
+await run('POST /t/:tenant/webhook recibe payload y responde ok', async () => {
+  const { env } = makeEnv();
+  const originalLog = console.log;
+  const logs = [];
+  console.log = (...args) => {
+    logs.push(args);
+  };
+
+  try {
+    const res = await worker.fetch(
+      new Request('https://x/t/demo/webhook', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ object: 'whatsapp_business_account' })
+      }),
+      env,
+      {}
+    );
+    const body = await res.json();
+
+    assert.equal(res.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(logs.some((entry) => entry[0] === '[meta:webhook]'), true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 await run('chat responde campos de observabilidad kv', async () => {
   const { env, kv } = makeEnv();
   kv.set('tenant:demo:api_key', 'secret');
