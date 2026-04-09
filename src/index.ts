@@ -333,16 +333,15 @@ const getMetaVerifyToken = (env: Env, tenant: string): string | null => {
 
 const handleWebhookGet = (url: URL, env: Env, tenant: string): Response => {
   // meta callback verification
-  const mode = url.searchParams.get('hub.mode');
   const verifyToken = url.searchParams.get('hub.verify_token');
   const challenge = url.searchParams.get('hub.challenge');
   const expectedToken = getMetaVerifyToken(env, tenant);
 
-  if (mode !== 'subscribe' || !verifyToken || !challenge || !expectedToken || verifyToken !== expectedToken) {
-    return new Response('forbidden', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  if (!verifyToken || !challenge || !expectedToken || verifyToken !== expectedToken) {
+    return new Response(null, { status: 403 });
   }
 
-  return new Response(challenge, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  return new Response(challenge, { status: 200, headers: { 'content-type': 'text/plain' } });
 };
 
 const handleWebhookPost = async (request: Request): Promise<Response> => {
